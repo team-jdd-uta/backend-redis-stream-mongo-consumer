@@ -1,0 +1,19 @@
+{
+  "name": "from_redis_to_db",
+  "version": "0.0.1",
+  "description": "skala-mini-project 레디스 스트림 읽어서 몽고로",
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "produce:terminal": "node src/tools/streamProducer.js",
+    "delete:last": "node src/tools/delete-last.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.4",
+    "mongoose": "^9.2.0",
+    "redis": "^5.10.0"
+  }
+}
