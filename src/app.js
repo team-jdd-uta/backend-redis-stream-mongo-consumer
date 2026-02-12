@@ -15,7 +15,7 @@ const start = async () => {
 
         // Consumer 시작
         console.log("🚀 Comment Consumer 시작 중...");
-        console.log(`📌 STREAM_KEY: ${process.env.STREAM_KEY}`);
+        console.log(`📌 STREAM_PATTERN: ${process.env.STREAM_PATTERN || process.env.STREAM_KEY || "chat:stream:room:*"}`);
         console.log(`📌 GROUP_NAME: ${process.env.GROUP_NAME}`);
         console.log(`📌 CONSUMER_NAME: ${process.env.CONSUMER_NAME}`);
         console.log("\n대기 중... (메시지 수신 대기)");
