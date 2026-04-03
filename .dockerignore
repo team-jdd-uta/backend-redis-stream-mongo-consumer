@@ -1,0 +1,15 @@
+node_modules
+npm-debug.log
+.DS_Store
+.git
+.gitignore
+README.md
+QUICK_START.md
+SETUP_GUIDE.md
+docker-compose.yml
+consumer.env
+consumer.env.example
+test-redis.js
+test-system.js
+producer.js
+delete
