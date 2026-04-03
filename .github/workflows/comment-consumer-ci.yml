@@ -1,0 +1,27 @@
+name: Comment Consumer CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  comment-consumer:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build comment consumer Docker image
+        run: docker build -t comment-consumer-ci:latest .

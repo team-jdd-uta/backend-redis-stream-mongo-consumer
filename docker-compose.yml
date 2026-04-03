@@ -31,6 +31,24 @@ services:
     networks:
       - comment-network
 
+  consumer:
+    # 사용자 요청(환경변수 외부 분리 + Docker 이미지 실행)에 따라 Node consumer 컨테이너를 추가함
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: comment-consumer
+    env_file:
+      # 외부 파일에서 consume 관련 값(READ_BLOCK_MS 등) 포함 모든 env를 조정할 수 있음
+      - ./consumer.env
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - comment-network
+
 volumes:
   mongodb_data:
   redis_data:
@@ -38,4 +56,3 @@ volumes:
 networks:
   comment-network:
     driver: bridge
-
