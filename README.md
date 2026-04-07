@@ -59,3 +59,5 @@ docker compose logs -f consumer
 ```
 
 `consumer.env`에서 `READ_BLOCK_MS`, `BATCH_INTERVAL_MS` 등 모든 consumer env 값을 수정할 수 있습니다.
+
+GitOps push test marker for CI verification.

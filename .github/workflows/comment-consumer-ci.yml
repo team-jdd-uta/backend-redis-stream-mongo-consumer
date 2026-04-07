@@ -14,6 +14,8 @@ env:
   REGISTRY: amdp-registry.skala-ai.com
   IMAGE_NAME: skala26a-cloud/team9-comment-consumer
   IMAGE_VERSION: 1.0.0
+  GITOPS_REPO: team-jdd-uta/GitOps
+  GITOPS_REPO_DIR: gitops
 
 jobs:
   test:
@@ -54,15 +56,10 @@ jobs:
           username: ${{ secrets.AMDP_REGISTRY_USERNAME }}
           password: ${{ secrets.AMDP_REGISTRY_PASSWORD }}
 
-      - name: Set docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=${{ env.IMAGE_VERSION }}
-            type=sha
-            type=ref,event=branch
+      - name: Set image tag
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "IMAGE_TAG=sha-${SHORT_SHA}" >> "$GITHUB_ENV"
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -71,5 +68,33 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_VERSION }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Checkout GitOps repo
+        if: github.event_name == 'push'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          ref: main
+          path: ${{ env.GITOPS_REPO_DIR }}
+          token: ${{ secrets.GITOPS_REPO_TOKEN }}
+
+      - name: Update comment consumer image tag in GitOps
+        if: github.event_name == 'push'
+        working-directory: ${{ env.GITOPS_REPO_DIR }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          ruby -pi -e 'gsub(/^  tag: .*/, "  tag: #{ENV.fetch(%q{IMAGE_TAG})}")' environments/prod/comment-consumer.values.yaml
+          if git diff --quiet -- environments/prod/comment-consumer.values.yaml; then
+            echo "No GitOps changes to commit."
+            exit 0
+          fi
+          git add environments/prod/comment-consumer.values.yaml
+          git commit -m "Update comment consumer image tag to ${IMAGE_TAG}"
+          git push origin main
