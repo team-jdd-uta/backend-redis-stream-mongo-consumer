@@ -6,7 +6,7 @@ const startConsumer = require("./streams/commentConsumer");
 
 const start = async () => {
     try {
-        const mongoUri = process.env.MONGO_URI || "mongodb://mongodb:27017/commentdb";
+        const mongoUri = process.env.MONGO_URI || "mongodb://mongodb-service:27017/commentdb";
 
         // MongoDB 연결
         await mongoose.connect(mongoUri);
