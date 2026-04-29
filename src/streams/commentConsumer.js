@@ -3,6 +3,7 @@ const { saveCommentsBatch } = require("../services/commentService");
 const { performance } = require("perf_hooks");
 
 const STREAM_PATTERN = process.env.STREAM_PATTERN || process.env.STREAM_KEY || "chat:stream:room:*";
+const GROUP_START_ID = process.env.GROUP_START_ID || "$";
 const GROUP_NAME = process.env.GROUP_NAME;
 const CONSUMER_NAME = process.env.CONSUMER_NAME;
 const BATCH_INTERVAL_MS = Number(process.env.BATCH_INTERVAL_MS || 100);
@@ -23,21 +24,21 @@ const ensureGroupForStream = async (streamKey) => {
         await redisClient.xGroupCreate(
             streamKey,
             GROUP_NAME,
-            "0",
+            GROUP_START_ID,
             { MKSTREAM: true }
         );
         console.log(`✅ Consumer Group 생성 완료: ${streamKey}`);
+        return true;
     } catch (err) {
         const errorMsg = err.message || String(err);
 
         if (errorMsg.includes("BUSYGROUP") || errorMsg.includes("already exists")) {
-            // 이미 생성된 그룹이면 정상 케이스
-            return;
+            return true;
         }
 
         if (errorMsg.includes("WRONGTYPE")) {
             console.warn(`⚠️ Stream 키가 아님, 건너뜀: ${streamKey}`);
-            return;
+            return false;
         }
 
         if (errorMsg.includes("unknown command") || errorMsg.includes("XGROUP")) {
@@ -83,15 +84,21 @@ const refreshStreams = async () => {
     try {
         const discovered = await discoverStreamKeys();
 
+        const validStreams = [];
         for (const streamKey of discovered) {
             if (!knownStreams.has(streamKey)) {
-                await ensureGroupForStream(streamKey);
-                knownStreams.add(streamKey);
-                console.log(`📌 신규 stream 등록: ${streamKey}`);
+                const ok = await ensureGroupForStream(streamKey);
+                if (ok) {
+                    knownStreams.add(streamKey);
+                    console.log(`📌 신규 stream 등록: ${streamKey}`);
+                }
+            }
+            if (knownStreams.has(streamKey)) {
+                validStreams.push(streamKey);
             }
         }
 
-        activeStreams = discovered;
+        activeStreams = validStreams;
     } finally {
         discoveryInProgress = false;
     }
