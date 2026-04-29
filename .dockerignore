@@ -1,0 +1,12 @@
+node_modules
+npm-debug.log*
+.git
+.gitignore
+README.md
+QUICK_START.md
+SETUP_GUIDE.md
+test-redis.js
+test-system.js
+producer.js
+src/tools
+.env
