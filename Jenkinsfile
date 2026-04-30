@@ -5,19 +5,16 @@ pipeline {
 apiVersion: v1
 kind: Pod
 spec:
+  serviceAccountName: TODO_JENKINS_AGENT_SERVICE_ACCOUNT
   containers:
     - name: kaniko
       image: gcr.io/kaniko-project/executor:debug
       command:
         - /busybox/cat
       tty: true
-      volumeMounts:
-        - name: docker-config
-          mountPath: /kaniko/.docker
-  volumes:
-    - name: docker-config
-      secret:
-        secretName: TODO_HARBOR_DOCKERCONFIG_SECRET
+      env:
+        - name: AWS_SDK_LOAD_CONFIG
+          value: "true"
 """
     }
   }
@@ -31,14 +28,14 @@ spec:
   parameters {
     string(name: 'IMAGE_TAG', defaultValue: '', description: '비워두면 git short sha를 이미지 태그로 사용합니다.')
     booleanParam(name: 'RUN_TESTS', defaultValue: false, description: 'TODO: 테스트 스크립트 추가 후 true로 전환하세요.')
-    booleanParam(name: 'PUSH_IMAGE', defaultValue: true, description: 'main 브랜치에서 Harbor 이미지 push 여부')
+    booleanParam(name: 'PUSH_IMAGE', defaultValue: true, description: 'main 브랜치에서 ECR 이미지 push 여부')
     booleanParam(name: 'DEPLOY', defaultValue: false, description: 'main 브랜치에서만 배포 연동을 실행합니다.')
   }
 
   environment {
-    HARBOR_REGISTRY = 'TODO_HARBOR_REGISTRY'
-    HARBOR_PROJECT = 'TODO_HARBOR_PROJECT'
-    HARBOR_DOCKERCONFIG_SECRET = 'TODO_HARBOR_DOCKERCONFIG_SECRET'
+    AWS_ACCOUNT_ID = 'TODO_AWS_ACCOUNT_ID'
+    AWS_REGION = 'ap-northeast-2'
+    JENKINS_AGENT_SERVICE_ACCOUNT = 'TODO_JENKINS_AGENT_SERVICE_ACCOUNT'
     IMAGE_PREFIX = 'team9-'
     IMAGE_NAME = 'redis-stream-mongo-consumer'
     DOCKER_CONTEXT = '.'
@@ -61,8 +58,9 @@ spec:
           env.RESOLVED_IMAGE_TAG = params.IMAGE_TAG?.trim()
             ? params.IMAGE_TAG.trim()
             : sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
-          env.IMAGE_REF = "${env.HARBOR_REGISTRY}/${env.HARBOR_PROJECT}/${env.IMAGE_PREFIX}${env.IMAGE_NAME}:${env.RESOLVED_IMAGE_TAG}"
-          env.KANIKO_CACHE_REPO = "${env.HARBOR_REGISTRY}/${env.HARBOR_PROJECT}/kaniko-cache"
+          env.ECR_REGISTRY = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
+          env.IMAGE_REF = "${env.ECR_REGISTRY}/${env.IMAGE_PREFIX}${env.IMAGE_NAME}:${env.RESOLVED_IMAGE_TAG}"
+          env.KANIKO_CACHE_REPO = "${env.ECR_REGISTRY}/${env.IMAGE_PREFIX}kaniko-cache"
           echo "Image: ${env.IMAGE_REF}"
         }
       }
