@@ -60,7 +60,6 @@ spec:
             : sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
           env.ECR_REGISTRY = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
           env.IMAGE_REF = "${env.ECR_REGISTRY}/${env.IMAGE_PREFIX}${env.IMAGE_NAME}:${env.RESOLVED_IMAGE_TAG}"
-          env.KANIKO_CACHE_REPO = "${env.ECR_REGISTRY}/${env.IMAGE_PREFIX}kaniko-cache"
           echo "Image: ${env.IMAGE_REF}"
         }
       }
@@ -104,8 +103,7 @@ spec:
               --dockerfile "$WORKSPACE/$DOCKERFILE" \
               --custom-platform "$PLATFORM" \
               --destination "$IMAGE_REF" \
-              --cache=true \
-              --cache-repo "$KANIKO_CACHE_REPO"
+              --cache=false
           '''
         }
       }
