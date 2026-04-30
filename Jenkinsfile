@@ -1,5 +1,26 @@
 pipeline {
-  agent any
+  agent {
+    kubernetes {
+      yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: kaniko
+      image: gcr.io/kaniko-project/executor:debug
+      command:
+        - /busybox/cat
+      tty: true
+      volumeMounts:
+        - name: docker-config
+          mountPath: /kaniko/.docker
+  volumes:
+    - name: docker-config
+      secret:
+        secretName: TODO_HARBOR_DOCKERCONFIG_SECRET
+"""
+    }
+  }
 
   options {
     timestamps()
@@ -10,14 +31,14 @@ pipeline {
   parameters {
     string(name: 'IMAGE_TAG', defaultValue: '', description: '비워두면 git short sha를 이미지 태그로 사용합니다.')
     booleanParam(name: 'RUN_TESTS', defaultValue: false, description: 'TODO: 테스트 스크립트 추가 후 true로 전환하세요.')
-    booleanParam(name: 'PUSH_IMAGE', defaultValue: true, description: 'Harbor push 여부')
-    booleanParam(name: 'DEPLOY', defaultValue: false, description: 'TODO: ArgoCD/Jenkins 배포 연동 후 true로 사용')
+    booleanParam(name: 'PUSH_IMAGE', defaultValue: true, description: 'main 브랜치에서 Harbor 이미지 push 여부')
+    booleanParam(name: 'DEPLOY', defaultValue: false, description: 'main 브랜치에서만 배포 연동을 실행합니다.')
   }
 
   environment {
     HARBOR_REGISTRY = 'TODO_HARBOR_REGISTRY'
     HARBOR_PROJECT = 'TODO_HARBOR_PROJECT'
-    HARBOR_CREDENTIALS_ID = 'TODO_HARBOR_CREDENTIALS_ID'
+    HARBOR_DOCKERCONFIG_SECRET = 'TODO_HARBOR_DOCKERCONFIG_SECRET'
     IMAGE_PREFIX = 'team9-'
     IMAGE_NAME = 'redis-stream-mongo-consumer'
     DOCKER_CONTEXT = '.'
@@ -41,6 +62,7 @@ pipeline {
             ? params.IMAGE_TAG.trim()
             : sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
           env.IMAGE_REF = "${env.HARBOR_REGISTRY}/${env.HARBOR_PROJECT}/${env.IMAGE_PREFIX}${env.IMAGE_NAME}:${env.RESOLVED_IMAGE_TAG}"
+          env.KANIKO_CACHE_REPO = "${env.HARBOR_REGISTRY}/${env.HARBOR_PROJECT}/kaniko-cache"
           echo "Image: ${env.IMAGE_REF}"
         }
       }
@@ -53,35 +75,53 @@ pipeline {
       }
     }
 
-    stage('Docker Build') {
+    stage('PR Image Build Check') {
+      when { changeRequest target: 'main' }
       steps {
-        sh '''
-          docker buildx build \
-            --platform "$PLATFORM" \
-            --load \
-            -f "$DOCKERFILE" \
-            -t "$IMAGE_REF" \
-            "$DOCKER_CONTEXT"
-        '''
+        container('kaniko') {
+          sh '''
+            /kaniko/executor \
+              --context "$WORKSPACE/$DOCKER_CONTEXT" \
+              --dockerfile "$WORKSPACE/$DOCKERFILE" \
+              --custom-platform "$PLATFORM" \
+              --no-push \
+              --no-push-cache
+          '''
+        }
       }
     }
 
-    stage('Docker Push') {
-      when { expression { return params.PUSH_IMAGE } }
+    stage('Main Image Push') {
+      when {
+        allOf {
+          branch 'main'
+          expression { return params.PUSH_IMAGE }
+        }
+      }
       steps {
-        withCredentials([usernamePassword(credentialsId: env.HARBOR_CREDENTIALS_ID, usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_PASSWORD')]) {
+        container('kaniko') {
           sh '''
-            echo "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" -u "$HARBOR_USER" --password-stdin
-            docker push "$IMAGE_REF"
+            /kaniko/executor \
+              --context "$WORKSPACE/$DOCKER_CONTEXT" \
+              --dockerfile "$WORKSPACE/$DOCKERFILE" \
+              --custom-platform "$PLATFORM" \
+              --destination "$IMAGE_REF" \
+              --cache=true \
+              --cache-repo "$KANIKO_CACHE_REPO"
           '''
         }
       }
     }
 
     stage('Deploy') {
-      when { expression { return params.DEPLOY } }
+      when {
+        allOf {
+          branch 'main'
+          expression { return params.DEPLOY }
+        }
+      }
       steps {
-        echo 'TODO: ArgoCD app sync 또는 manifest repo image tag update를 여기에 연결하세요.'
+        echo 'TODO: manifest repo image tag update 또는 ArgoCD sync를 여기에 연결하세요.'
         echo "TODO target: ${env.DEPLOY_TARGET}"
       }
     }
