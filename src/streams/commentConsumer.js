@@ -2,50 +2,115 @@ const { redisClient } = require("../config/redis");
 const { saveCommentsBatch } = require("../services/commentService");
 const { performance } = require("perf_hooks");
 
-const STREAM_KEY = process.env.STREAM_KEY;
+const STREAM_PATTERN = process.env.STREAM_PATTERN || process.env.STREAM_KEY || "chat:stream:room:*";
+const GROUP_START_ID = process.env.GROUP_START_ID || "$";
 const GROUP_NAME = process.env.GROUP_NAME;
 const CONSUMER_NAME = process.env.CONSUMER_NAME;
 const BATCH_INTERVAL_MS = Number(process.env.BATCH_INTERVAL_MS || 100);
 const MAX_BATCH_SIZE = Number(process.env.MAX_BATCH_SIZE || 10000);
+const DISCOVERY_INTERVAL_MS = Number(process.env.DISCOVERY_INTERVAL_MS || 3000);
+const READ_COUNT = Number(process.env.READ_COUNT || 100);
+const READ_BLOCK_MS = Number(process.env.READ_BLOCK_MS || 5000);
 
-const createGroup = async () => {
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const hasWildcard = (value) => value.includes("*") || value.includes("?") || value.includes("[");
+
+const knownStreams = new Set();
+let activeStreams = [];
+let discoveryInProgress = false;
+
+const ensureGroupForStream = async (streamKey) => {
     try {
-        // XGROUP CREATE 명령어 실행
-        // redis v5에서는 sendCommand 사용 또는 xGroupCreate 메서드 사용
         await redisClient.xGroupCreate(
-            STREAM_KEY,
+            streamKey,
             GROUP_NAME,
-            "$",
-            {
-                MKSTREAM: true
-            }
+            GROUP_START_ID,
+            { MKSTREAM: true }
         );
-        console.log("✅ Consumer Group 생성 완료");
+        console.log(`✅ Consumer Group 생성 완료: ${streamKey}`);
+        return true;
     } catch (err) {
         const errorMsg = err.message || String(err);
 
+        if (errorMsg.includes("BUSYGROUP") || errorMsg.includes("already exists")) {
+            return true;
+        }
 
-        if (errorMsg.includes("BUSYGROUP") || errorMsg.includes("already exists") || errorMsg.includes("WRONGTYPE")) {
-            console.log("ℹConsumer Group 이미 존재 - 계속 진행");
-        } else if (errorMsg.includes("unknown command") || errorMsg.includes("XGROUP")) {
+        if (errorMsg.includes("WRONGTYPE")) {
+            console.warn(`⚠️ Stream 키가 아님, 건너뜀: ${streamKey}`);
+            return false;
+        }
+
+        if (errorMsg.includes("unknown command") || errorMsg.includes("XGROUP")) {
             console.error("XGROUP 명령어를 인식하지 못함");
             console.error("   Redis 버전을 확인하세요 (Stream 명령어는 Redis 5.0+ 필요)");
             throw new Error("Redis Stream 명령어 미지원 - Redis 5.0 이상 필요");
-        } else {
-            console.error("createGroup 에러 상세:", {
-                message: errorMsg,
-                code: err.code,
-                fullError: err
-            });
-            throw err;
         }
+
+        console.error("ensureGroupForStream 에러 상세:", {
+            streamKey,
+            message: errorMsg,
+            code: err.code,
+            fullError: err
+        });
+        throw err;
+    }
+};
+
+const discoverStreamKeys = async () => {
+    if (!hasWildcard(STREAM_PATTERN)) {
+        return [STREAM_PATTERN];
+    }
+
+    const found = [];
+    let cursor = "0";
+
+    do {
+        const result = await redisClient.scan(cursor, {
+            MATCH: STREAM_PATTERN,
+            COUNT: 100
+        });
+        cursor = result.cursor;
+        found.push(...result.keys);
+    } while (cursor !== "0");
+
+    return Array.from(new Set(found)).sort();
+};
+
+const refreshStreams = async () => {
+    if (discoveryInProgress) return;
+    discoveryInProgress = true;
+
+    try {
+        const discovered = await discoverStreamKeys();
+
+        const validStreams = [];
+        for (const streamKey of discovered) {
+            if (!knownStreams.has(streamKey)) {
+                const ok = await ensureGroupForStream(streamKey);
+                if (ok) {
+                    knownStreams.add(streamKey);
+                    console.log(`📌 신규 stream 등록: ${streamKey}`);
+                }
+            }
+            if (knownStreams.has(streamKey)) {
+                validStreams.push(streamKey);
+            }
+        }
+
+        activeStreams = validStreams;
+    } finally {
+        discoveryInProgress = false;
     }
 };
 
 const startConsumer = async () => {
-    await createGroup();
+    await refreshStreams();
 
     console.log("🔄 Consumer 시작: 메시지 대기 중...\n");
+    console.log(`📌 STREAM_PATTERN: ${STREAM_PATTERN}`);
+    console.log(`📌 GROUP_NAME: ${GROUP_NAME}`);
+    console.log(`📌 CONSUMER_NAME: ${CONSUMER_NAME}`);
 
     const pending = [];
     let flushing = false;
@@ -56,23 +121,28 @@ const startConsumer = async () => {
         flushing = true;
 
         const batch = pending.splice(0, pending.length);
-        const ids = batch.map((item) => item.id);
-        const docs = batch.map((item) => item.data);
 
         try {
             const saveStart = performance.now();
-            await saveCommentsBatch(docs);
+            await saveCommentsBatch(batch.map((item) => item.data));
             const saveMs = performance.now() - saveStart;
 
             const ackStart = performance.now();
-            await redisClient.xAck(
-                STREAM_KEY,
-                GROUP_NAME,
-                ...ids
-            );
-            const ackMs = performance.now() - ackStart;
+            const ackByStream = new Map();
 
-            console.log(`✅ 배치 저장 및 ACK 완료: ${ids.length}건 (저장 ${saveMs.toFixed(2)} ms, ACK ${ackMs.toFixed(2)} ms, ${reason})`);
+            for (const item of batch) {
+                if (!ackByStream.has(item.stream)) {
+                    ackByStream.set(item.stream, []);
+                }
+                ackByStream.get(item.stream).push(item.id);
+            }
+
+            for (const [streamKey, ids] of ackByStream.entries()) {
+                await redisClient.xAck(streamKey, GROUP_NAME, ...ids);
+            }
+
+            const ackMs = performance.now() - ackStart;
+            console.log(`✅ 배치 저장 및 ACK 완료: ${batch.length}건 (저장 ${saveMs.toFixed(2)} ms, ACK ${ackMs.toFixed(2)} ms, ${reason})`);
         } catch (err) {
             console.error("❌ 배치 저장 실패:", err.message || err);
             pending.unshift(...batch);
@@ -85,13 +155,28 @@ const startConsumer = async () => {
         flushQueue("interval");
     }, BATCH_INTERVAL_MS);
 
+    setInterval(() => {
+        refreshStreams().catch((err) => {
+            console.error("❌ stream 탐색 실패:", err.message || err);
+        });
+    }, DISCOVERY_INTERVAL_MS);
+
     while (true) {
         try {
+            if (activeStreams.length === 0) {
+                if (!idleLogged && pending.length === 0 && !flushing) {
+                    console.log("⏳ 대기 중... (매칭되는 stream 없음)");
+                    idleLogged = true;
+                }
+                await sleep(1000);
+                continue;
+            }
+
             const response = await redisClient.xReadGroup(
                 GROUP_NAME,
                 CONSUMER_NAME,
-                { key: STREAM_KEY, id: ">" },
-                { COUNT: 100, BLOCK: 5000 }
+                activeStreams.map((key) => ({ key, id: ">" })),
+                { COUNT: READ_COUNT, BLOCK: READ_BLOCK_MS }
             );
 
             if (!response) {
@@ -106,18 +191,20 @@ const startConsumer = async () => {
 
             for (const stream of response) {
                 for (const message of stream.messages) {
-                    pending.push({ id: message.id, data: message.message });
+                    pending.push({
+                        stream: stream.name,
+                        id: message.id,
+                        data: message.message
+                    });
 
                     if (pending.length >= MAX_BATCH_SIZE) {
                         await flushQueue("max-size");
                     }
                 }
             }
-
         } catch (err) {
             console.error("-------------------Stream 처리 에러:", err.message || err);
-            // 에러 발생 시 5초 대기 후 재시도
-            await new Promise(resolve => setTimeout(resolve, 5000));
+            await sleep(5000);
         }
     }
 };

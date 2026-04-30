@@ -1,10 +1,15 @@
 const Comment = require("../models/Comment");
 
 const toCommentDoc = (data) => ({
-    user_id: String(data.user_id ?? ""),
-    comment: String(data.comment ?? ""),
-    room_id: String(data.room_id ?? "0"),
-    createdAt: data.createdAt ? new Date(data.createdAt) : new Date()
+    // Java producer(sender/message/roomId/publishedAt)와 기존 producer(user_id/comment/room_id/createdAt)를 모두 수용
+    user_id: String(data.user_id ?? data.sender ?? ""),
+    comment: String(data.comment ?? data.message ?? ""),
+    room_id: String(data.room_id ?? data.roomId ?? "0"),
+    createdAt: data.createdAt
+        ? new Date(data.createdAt)
+        : data.publishedAt
+            ? new Date(Number(data.publishedAt))
+            : new Date()
 });
 
 const saveComment = async (data) => {
