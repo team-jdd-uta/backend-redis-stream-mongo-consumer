@@ -5,7 +5,7 @@ pipeline {
 apiVersion: v1
 kind: Pod
 spec:
-  serviceAccountName: TODO_JENKINS_AGENT_SERVICE_ACCOUNT
+  serviceAccountName: jenkins-kaniko-agent
   containers:
     - name: kaniko
       image: gcr.io/kaniko-project/executor:debug
@@ -33,9 +33,9 @@ spec:
   }
 
   environment {
-    AWS_ACCOUNT_ID = 'TODO_AWS_ACCOUNT_ID'
+    AWS_ACCOUNT_ID = '881490135253'
     AWS_REGION = 'ap-northeast-2'
-    JENKINS_AGENT_SERVICE_ACCOUNT = 'TODO_JENKINS_AGENT_SERVICE_ACCOUNT'
+    JENKINS_AGENT_SERVICE_ACCOUNT = 'jenkins-kaniko-agent'
     IMAGE_PREFIX = 'team9-'
     IMAGE_NAME = 'redis-stream-mongo-consumer'
     DOCKER_CONTEXT = '.'
