@@ -15,6 +15,16 @@ spec:
       env:
         - name: AWS_SDK_LOAD_CONFIG
           value: "true"
+    - name: node
+      image: node:20-alpine
+      command:
+        - cat
+      tty: true
+    - name: gitops
+      image: alpine:3.20
+      command:
+        - cat
+      tty: true
 """
     }
   }
@@ -27,9 +37,10 @@ spec:
 
   parameters {
     string(name: 'IMAGE_TAG', defaultValue: '', description: '비워두면 git short sha를 이미지 태그로 사용합니다.')
-    booleanParam(name: 'RUN_TESTS', defaultValue: false, description: 'TODO: 테스트 스크립트 추가 후 true로 전환하세요.')
+    booleanParam(name: 'RUN_TESTS', defaultValue: false, description: 'npm dependency install 검증을 실행합니다.')
     booleanParam(name: 'PUSH_IMAGE', defaultValue: true, description: 'main 브랜치에서 ECR 이미지 push 여부')
     booleanParam(name: 'DEPLOY', defaultValue: false, description: 'main 브랜치에서만 배포 연동을 실행합니다.')
+    string(name: 'GITOPS_CREDENTIALS_ID', defaultValue: 'github-token', description: 'GitOps repo에 commit/push 가능한 Jenkins username/password credentials ID')
   }
 
   environment {
@@ -41,8 +52,11 @@ spec:
     DOCKER_CONTEXT = '.'
     DOCKERFILE = 'Dockerfile'
     PLATFORM = 'linux/amd64'
-    TEST_COMMAND = 'TODO_ADD_TEST_COMMAND'
-    DEPLOY_TARGET = 'TODO_ARGOCD_APP_OR_MANIFEST_REPO'
+    TEST_COMMAND = 'npm ci'
+    GITOPS_REPO_URL = 'https://github.com/team-jdd-uta/gitops.git'
+    GITOPS_REPO_BRANCH = 'main'
+    GITOPS_VALUES_FILE = 'bootstrap/root/values.yaml'
+    GITOPS_APP_NAME = 'backend-redis-stream-mongo-consumer'
   }
 
   stages {
@@ -68,7 +82,9 @@ spec:
     stage('Test') {
       when { expression { return params.RUN_TESTS } }
       steps {
-        error 'TODO: package.json의 test 스크립트를 실제 검증 명령으로 교체한 뒤 TEST_COMMAND를 설정하세요.'
+        container('node') {
+          sh "${env.TEST_COMMAND}"
+        }
       }
     }
 
@@ -117,8 +133,33 @@ spec:
         }
       }
       steps {
-        echo 'TODO: manifest repo image tag update 또는 ArgoCD sync를 여기에 연결하세요.'
-        echo "TODO target: ${env.DEPLOY_TARGET}"
+        container('gitops') {
+          withCredentials([usernamePassword(credentialsId: params.GITOPS_CREDENTIALS_ID, usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
+            sh '''
+              set -eu
+              apk add --no-cache git yq
+              rm -rf gitops-work
+
+              AUTH_HEADER="$(printf '%s:%s' "$GIT_USERNAME" "$GIT_PASSWORD" | base64 | tr -d '\\n')"
+              git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${AUTH_HEADER}" \
+                clone --branch "$GITOPS_REPO_BRANCH" "$GITOPS_REPO_URL" gitops-work
+
+              cd gitops-work
+              yq -i '(.applications[] | select(.name == strenv(GITOPS_APP_NAME)) | .image.tag) = strenv(RESOLVED_IMAGE_TAG)' "$GITOPS_VALUES_FILE"
+              if git diff --quiet; then
+                echo "No GitOps image tag change for ${GITOPS_APP_NAME}"
+                exit 0
+              fi
+
+              git config user.name "${GIT_COMMITTER_NAME:-jenkins}"
+              git config user.email "${GIT_COMMITTER_EMAIL:-jenkins@team9.local}"
+              git add "$GITOPS_VALUES_FILE"
+              git commit -m "chore: deploy ${GITOPS_APP_NAME} ${RESOLVED_IMAGE_TAG}"
+              git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${AUTH_HEADER}" \
+                push origin "HEAD:${GITOPS_REPO_BRANCH}"
+            '''
+          }
+        }
       }
     }
   }
