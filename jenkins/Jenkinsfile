@@ -237,7 +237,7 @@ void notifySlack(String message) {
   writeFile file: '.slack-payload.json', text: JsonOutput.toJson([text: message])
   container('curl') {
     withCredentials([string(credentialsId: env.SLACK_WEBHOOK_CREDENTIALS_ID, variable: 'SLACK_WEBHOOK_URL')]) {
-      sh(label: 'Notify Slack', script: 'curl -fsS -X POST -H "Content-Type: application/json" --data @.slack-payload.json "$SLACK_WEBHOOK_URL" >/dev/null')
+      sh(label: 'Notify Slack', script: 'curl --max-time 10 --retry 1 -fsS -X POST -H "Content-Type: application/json" --data @.slack-payload.json "$SLACK_WEBHOOK_URL" >/dev/null || echo "Slack notification failed; continuing pipeline."')
     }
   }
 }
