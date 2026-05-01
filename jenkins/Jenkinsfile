@@ -1,3 +1,5 @@
+import groovy.json.JsonOutput
+
 pipeline {
   agent {
     kubernetes {
@@ -25,6 +27,11 @@ spec:
       command:
         - cat
       tty: true
+    - name: curl
+      image: curlimages/curl:8.11.1
+      command:
+        - cat
+      tty: true
 """
     }
   }
@@ -40,6 +47,7 @@ spec:
     booleanParam(name: 'RUN_TESTS', defaultValue: true, description: 'Node.js dependency install and syntax checks 실행 여부')
     booleanParam(name: 'PUSH_IMAGE', defaultValue: true, description: 'main 브랜치에서 ECR 이미지 push 여부')
     booleanParam(name: 'DEPLOY', defaultValue: false, description: 'main 브랜치에서만 배포 연동을 실행합니다.')
+    string(name: 'APPROVAL_TIMEOUT_MINUTES', defaultValue: '30', description: 'Webhook-triggered main branch builds wait this many minutes for approval.')
   }
 
   environment {
@@ -56,6 +64,8 @@ spec:
     GITOPS_REPO_URL = 'https://github.com/team-jdd-uta/gitops.git'
     GITOPS_BRANCH = 'main'
     GITOPS_APP_FILE = 'bootstrap/root/applications/backend-redis-stream-mongo-consumer.yaml'
+    JENKINS_PUBLIC_URL = 'http://jenkins.team9.cloud.skala-ai.com'
+    SLACK_WEBHOOK_CREDENTIALS_ID = 'jenkins-slack-webhook'
     ARGOCD_APP_NAME = 'backend-redis-stream-mongo-consumer-dev'
   }
 
@@ -78,13 +88,53 @@ spec:
           env.IS_MAIN_BUILD = ((env.BRANCH_NAME == 'main') || (env.GIT_BRANCH == 'origin/main')).toString()
           echo "Image: ${env.IMAGE_REF}"
           echo "Latest image: ${env.LATEST_IMAGE_REF}"
+          env.RUN_TESTS_EFFECTIVE = params.RUN_TESTS.toString()
+          env.PUSH_IMAGE_EFFECTIVE = params.PUSH_IMAGE.toString()
+          env.DEPLOY_EFFECTIVE = params.DEPLOY.toString()
           echo "Main build: ${env.IS_MAIN_BUILD}"
         }
       }
     }
 
+
+    stage('Approval') {
+      when {
+        expression { return env.IS_MAIN_BUILD == 'true' }
+      }
+      steps {
+        script {
+          notifySlack("Code change detected for *${env.JOB_NAME}* #${env.BUILD_NUMBER}.\nBranch: ${env.BRANCH_NAME ?: env.GIT_BRANCH}\nCommit: ${env.GIT_COMMIT}\nImage tag: ${env.RESOLVED_IMAGE_TAG}\nApprove and choose options: ${env.BUILD_URL}input")
+
+          def approval = timeout(time: params.APPROVAL_TIMEOUT_MINUTES as Integer, unit: 'MINUTES') {
+            input(
+              id: 'PipelineApproval',
+              message: "Run ${env.JOB_NAME} #${env.BUILD_NUMBER}?",
+              ok: 'Run pipeline',
+              submitterParameter: 'APPROVED_BY',
+              parameters: [
+                string(name: 'IMAGE_TAG', defaultValue: env.RESOLVED_IMAGE_TAG, description: 'Image tag to build and deploy.'),
+                booleanParam(name: 'RUN_TESTS', defaultValue: params.RUN_TESTS, description: 'Run test stage before image push.'),
+                booleanParam(name: 'PUSH_IMAGE', defaultValue: params.PUSH_IMAGE, description: 'Push image to ECR.'),
+                booleanParam(name: 'DEPLOY', defaultValue: params.DEPLOY, description: 'Update GitOps manifest for Argo CD deployment.')
+              ]
+            )
+          }
+
+          env.APPROVED_BY = approval.APPROVED_BY ?: 'unknown'
+          env.RUN_TESTS_EFFECTIVE = approval.RUN_TESTS.toString()
+          env.PUSH_IMAGE_EFFECTIVE = approval.PUSH_IMAGE.toString()
+          env.DEPLOY_EFFECTIVE = approval.DEPLOY.toString()
+          env.RESOLVED_IMAGE_TAG = approval.IMAGE_TAG?.trim() ? approval.IMAGE_TAG.trim() : env.RESOLVED_IMAGE_TAG
+          env.IMAGE_REF = "${env.ECR_REGISTRY}/${env.IMAGE_PREFIX}${env.IMAGE_NAME}:${env.RESOLVED_IMAGE_TAG}"
+          env.LATEST_IMAGE_REF = "${env.ECR_REGISTRY}/${env.IMAGE_PREFIX}${env.IMAGE_NAME}:latest"
+
+          notifySlack("Pipeline approved by *${env.APPROVED_BY}*.\nRUN_TESTS=${env.RUN_TESTS_EFFECTIVE}, PUSH_IMAGE=${env.PUSH_IMAGE_EFFECTIVE}, DEPLOY=${env.DEPLOY_EFFECTIVE}, IMAGE_TAG=${env.RESOLVED_IMAGE_TAG}\nBuild: ${env.BUILD_URL}")
+        }
+      }
+    }
+
     stage('Test') {
-      when { expression { return params.RUN_TESTS } }
+      when { expression { return env.RUN_TESTS_EFFECTIVE == 'true' } }
       steps {
         container('node') {
           sh "${env.TEST_COMMAND}"
@@ -112,7 +162,7 @@ spec:
       when {
         allOf {
           expression { return env.IS_MAIN_BUILD == 'true' }
-          expression { return params.PUSH_IMAGE }
+          expression { return env.PUSH_IMAGE_EFFECTIVE == 'true' }
         }
       }
       steps {
@@ -134,7 +184,7 @@ spec:
       when {
         allOf {
           expression { return env.IS_MAIN_BUILD == 'true' }
-          expression { return params.DEPLOY }
+          expression { return env.DEPLOY_EFFECTIVE == 'true' }
         }
       }
       steps {
@@ -162,6 +212,32 @@ spec:
           }
         }
       }
+    }
+  }
+
+  post {
+    success {
+      notifySlack("*${env.JOB_NAME}* #${env.BUILD_NUMBER} succeeded.\nImage tag: ${env.RESOLVED_IMAGE_TAG ?: 'n/a'}\nBuild: ${env.BUILD_URL}")
+    }
+    failure {
+      notifySlack("*${env.JOB_NAME}* #${env.BUILD_NUMBER} failed.\nBuild: ${env.BUILD_URL}")
+    }
+    aborted {
+      notifySlack("*${env.JOB_NAME}* #${env.BUILD_NUMBER} was aborted or timed out before approval.\nBuild: ${env.BUILD_URL}")
+    }
+  }
+}
+
+void notifySlack(String message) {
+  if (!env.SLACK_WEBHOOK_CREDENTIALS_ID?.trim()) {
+    echo 'Slack webhook credential id is empty; skipping Slack notification.'
+    return
+  }
+
+  writeFile file: '.slack-payload.json', text: JsonOutput.toJson([text: message])
+  container('curl') {
+    withCredentials([string(credentialsId: env.SLACK_WEBHOOK_CREDENTIALS_ID, variable: 'SLACK_WEBHOOK_URL')]) {
+      sh(label: 'Notify Slack', script: 'curl -fsS -X POST -H "Content-Type: application/json" --data @.slack-payload.json "$SLACK_WEBHOOK_URL" >/dev/null')
     }
   }
 }
