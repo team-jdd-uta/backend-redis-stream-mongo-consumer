@@ -5,6 +5,7 @@ const fs = require("fs");
 const mongoose = require("mongoose");
 const os = require("os");
 const path = require("path");
+const { createChatHistoryServer } = require("./http/server");
 const { connectRedis } = require("./config/redis");
 const { initMariaDb, ensureChatHistorySchema, closeMariaDb } = require("./config/mariadb");
 const startConsumer = require("./streams/commentConsumer");
@@ -15,10 +16,23 @@ const {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const allowedOrigins = String(
+    process.env.CORS_ALLOWED_ORIGINS ||
+    "http://localhost:5173,http://127.0.0.1:5173,https://front.team9.cloud.skala-ai.com"
+)
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 
 app.use(express.json());
 app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "*");
+    const origin = req.headers.origin;
+
+    if (!origin || allowedOrigins.includes("*") || allowedOrigins.includes(origin)) {
+        res.header("Access-Control-Allow-Origin", allowedOrigins.includes("*") ? "*" : origin || "*");
+        res.header("Vary", "Origin");
+    }
+
     res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     res.header("Access-Control-Allow-Headers", "Content-Type,Authorization");
 
