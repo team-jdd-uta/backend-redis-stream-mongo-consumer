@@ -1,6 +1,14 @@
 const http = require('http');
 const { queryChatHistory } = require('../services/chatHistoryProjectionService');
 
+const allowedOrigins = String(
+  process.env.CORS_ALLOWED_ORIGINS ||
+  'http://localhost:5173,http://127.0.0.1:5173,https://front.team9.cloud.skala-ai.com'
+)
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
 function sendJson(res, statusCode, body) {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -16,10 +24,33 @@ function sendText(res, statusCode, text) {
   res.end(text);
 }
 
+function applyCors(req, res) {
+  const origin = req.headers.origin;
+
+  if (!origin) {
+    return;
+  }
+
+  if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigins.includes('*') ? '*' : origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+  }
+}
+
 function createChatHistoryServer({ port, drainingRef }) {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const pathname = url.pathname.replace(/\/$/, '') || '/';
+
+    applyCors(req, res);
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
 
     if (pathname === '/health') {
       sendJson(res, drainingRef.value ? 503 : 200, { ok: !drainingRef.value });
