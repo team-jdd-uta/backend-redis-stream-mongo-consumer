@@ -1,60 +1,79 @@
-const Comment = require('../models/Comment');
-const { saveChatHistoryBatch } = require('./chatHistoryProjectionService');
+const mongoose = require("mongoose");
+const Comment = require("../models/Comment");
 
-const toCommentDoc = (record) => {
-  const data = record?.data || record || {};
-  const meta = record?.meta || {};
-
-  return {
-    source_stream_id: String(meta.sourceStreamId || data.sourceStreamId || ''),
-    user_id: String(data.senderUserId ?? data.user_id ?? data.sender ?? ''),
-    sender_display_name: String(data.sender ?? data.senderDisplayName ?? data.user_id ?? ''),
-    room_owner_user_id: String(data.roomOwnerUserId ?? data.ownerUserId ?? data.room_owner_user_id ?? ''),
-    room_name: String(data.roomName ?? data.room_name ?? ''),
-    comment: String(data.comment ?? data.message ?? ''),
-    room_id: String(data.room_id ?? data.roomId ?? '0'),
+const toCommentDoc = (data) => ({
+    user_id: String(data.user_id ?? data.sender ?? ""),
+    comment: String(data.comment ?? data.message ?? ""),
+    room_id: String(data.room_id ?? data.roomId ?? "0"),
+    type: String(data.type ?? ""),
+    isSuperChat: data.isSuperChat === true || data.isSuperChat === "true",
+    msg_id: String(data.msg_id ?? data.msgId ?? ""),
+    stream_id: String(data.stream_id ?? data.streamId ?? ""),
+    stream_key: String(data.stream_key ?? data.streamKey ?? ""),
     createdAt: data.createdAt
-      ? new Date(data.createdAt)
-      : data.publishedAt
-        ? new Date(Number(data.publishedAt))
-        : new Date(),
-  };
-};
+        ? new Date(data.createdAt)
+        : data.publishedAt
+            ? new Date(Number(data.publishedAt))
+            : new Date()
+});
 
-const saveComment = async (record) => {
-  try {
-    const comment = new Comment(toCommentDoc(record));
+const saveComment = async (data) => {
+    try {
+        const comment = new Comment(toCommentDoc(data));
 
-    await comment.save();
-    console.log('댓글 저장 완료');
-  } catch (err) {
-    console.error('댓글 저장 실패:', err);
-    throw err;
-  }
+        await comment.save();
+        console.log("Comment saved");
+        return comment;
+    } catch (err) {
+        console.error("Comment save failed:", err);
+        throw err;
+    }
 };
 
 const saveCommentsBatch = async (items) => {
-  const docs = items.map(toCommentDoc);
-  const commentOps = docs
-    .filter((doc) => doc.source_stream_id)
-    .map((doc) => ({
-      updateOne: {
-        filter: { source_stream_id: doc.source_stream_id },
-        update: { $setOnInsert: doc },
-        upsert: true,
-      },
-    }));
+    const docs = items.map(toCommentDoc);
 
-  if (commentOps.length > 0) {
-    const result = await Comment.bulkWrite(commentOps, { ordered: false });
-    console.log(`댓글 배치 저장 완료: ${result.upsertedCount || 0}건`);
-  } else {
-    console.log('댓글 배치 저장 건수 0건');
-  }
+    if (docs.length === 0) {
+        return [];
+    }
 
-  const projected = await saveChatHistoryBatch(items);
-  console.log(`채팅 조회용 projection 저장 완료: ${projected}건`);
-  return projected;
+    const result = await Comment.insertMany(docs, { ordered: false });
+    console.log(`Comment batch saved: ${result.length}`);
+    return result;
 };
 
-module.exports = { saveComment, saveCommentsBatch };
+const buildRoomFilterAfterComment = (roomId, lastCommentId) => {
+    const filter = {
+        room_id: String(roomId),
+        comment: { $ne: "" }
+    };
+
+    if (lastCommentId && mongoose.Types.ObjectId.isValid(lastCommentId)) {
+        filter._id = { $gt: new mongoose.Types.ObjectId(lastCommentId) };
+    }
+
+    return filter;
+};
+
+const countCommentsAfterCommentId = async (roomId, lastCommentId) => {
+    return Comment.countDocuments(buildRoomFilterAfterComment(roomId, lastCommentId));
+};
+
+const getLatestCommentsForRoom = async (roomId, limit) => {
+    const safeLimit = Math.max(Number(limit) || 1, 1);
+
+    return Comment.find({
+        room_id: String(roomId),
+        comment: { $ne: "" }
+    })
+        .sort({ _id: -1 })
+        .limit(safeLimit)
+        .lean();
+};
+
+module.exports = {
+    saveComment,
+    saveCommentsBatch,
+    countCommentsAfterCommentId,
+    getLatestCommentsForRoom
+};
