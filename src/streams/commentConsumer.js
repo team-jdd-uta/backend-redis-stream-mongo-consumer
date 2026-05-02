@@ -290,7 +290,10 @@ const startConsumer = async () => {
                     pending.push({
                         stream: stream.name,
                         id: message.id,
-                        data: message.message
+                        data: message.message,
+                        meta: {
+                          sourceStreamId: `${stream.name}:${message.id}`,
+                        }
                     });
 
                     if (pending.length >= MAX_BATCH_SIZE) {

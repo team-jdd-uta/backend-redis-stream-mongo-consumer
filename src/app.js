@@ -6,6 +6,7 @@ const mongoose = require("mongoose");
 const os = require("os");
 const path = require("path");
 const { connectRedis } = require("./config/redis");
+const { initMariaDb, ensureChatHistorySchema, closeMariaDb } = require("./config/mariadb");
 const startConsumer = require("./streams/commentConsumer");
 const {
     getLatestSummary,
@@ -73,6 +74,10 @@ app.get("/api/summaries/:roomId/history", async (req, res) => {
 });
 
 const start = async () => {
+    const draining = { value: false };
+    const port = Number(process.env.PORT || 3010);
+    const httpServer = createChatHistoryServer({ port, drainingRef: draining });
+
     try {
         await mongoose.connect(process.env.MONGO_URI);
         console.log("MongoDB connected");
@@ -88,9 +93,26 @@ const start = async () => {
         console.log(`GROUP_NAME: ${process.env.GROUP_NAME || "comment-group"}`);
         console.log(`CONSUMER_NAME: ${process.env.CONSUMER_NAME || "comment-worker-1"}`);
 
+        await httpServer.listen();
+        console.log(`🌐 Chat history API listening on :${port}`);
+
         const readinessFile = process.env.READINESS_FILE_PATH || path.join(os.tmpdir(), "consumer-ready");
         fs.writeFileSync(readinessFile, "ready\n");
-        await startConsumer();
+        void startConsumer().catch((err) => {
+            console.error("❌ Consumer 실행 실패:", err.message);
+            process.exit(1);
+        });
+
+        const shutdown = async () => {
+            draining.value = true;
+            await httpServer.close().catch(() => undefined);
+            await closeMariaDb().catch(() => undefined);
+            await mongoose.disconnect().catch(() => undefined);
+            process.exit(0);
+        };
+
+        process.once("SIGTERM", shutdown);
+        process.once("SIGINT", shutdown);
     } catch (err) {
         console.error("Application startup failed:", err.message);
         process.exit(1);
