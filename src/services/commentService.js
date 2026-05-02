@@ -1,10 +1,15 @@
+const mongoose = require("mongoose");
 const Comment = require("../models/Comment");
 
 const toCommentDoc = (data) => ({
-    // Java producer(sender/message/roomId/publishedAt)와 기존 producer(user_id/comment/room_id/createdAt)를 모두 수용
     user_id: String(data.user_id ?? data.sender ?? ""),
     comment: String(data.comment ?? data.message ?? ""),
     room_id: String(data.room_id ?? data.roomId ?? "0"),
+    type: String(data.type ?? ""),
+    isSuperChat: data.isSuperChat === true || data.isSuperChat === "true",
+    msg_id: String(data.msg_id ?? data.msgId ?? ""),
+    stream_id: String(data.stream_id ?? data.streamId ?? ""),
+    stream_key: String(data.stream_key ?? data.streamKey ?? ""),
     createdAt: data.createdAt
         ? new Date(data.createdAt)
         : data.publishedAt
@@ -17,17 +22,58 @@ const saveComment = async (data) => {
         const comment = new Comment(toCommentDoc(data));
 
         await comment.save();
-        console.log("댓글 저장 완료");
+        console.log("Comment saved");
+        return comment;
     } catch (err) {
-        console.error("댓글 저장 실패:", err);
+        console.error("Comment save failed:", err);
+        throw err;
     }
 };
 
 const saveCommentsBatch = async (items) => {
     const docs = items.map(toCommentDoc);
+
+    if (docs.length === 0) {
+        return [];
+    }
+
     const result = await Comment.insertMany(docs, { ordered: false });
-    console.log(`댓글 배치 저장 완료: ${result.length}건`);
-    return result.length;
+    console.log(`Comment batch saved: ${result.length}`);
+    return result;
 };
 
-module.exports = { saveComment, saveCommentsBatch };
+const buildRoomFilterAfterComment = (roomId, lastCommentId) => {
+    const filter = {
+        room_id: String(roomId),
+        comment: { $ne: "" }
+    };
+
+    if (lastCommentId && mongoose.Types.ObjectId.isValid(lastCommentId)) {
+        filter._id = { $gt: new mongoose.Types.ObjectId(lastCommentId) };
+    }
+
+    return filter;
+};
+
+const countCommentsAfterCommentId = async (roomId, lastCommentId) => {
+    return Comment.countDocuments(buildRoomFilterAfterComment(roomId, lastCommentId));
+};
+
+const getLatestCommentsForRoom = async (roomId, limit) => {
+    const safeLimit = Math.max(Number(limit) || 1, 1);
+
+    return Comment.find({
+        room_id: String(roomId),
+        comment: { $ne: "" }
+    })
+        .sort({ _id: -1 })
+        .limit(safeLimit)
+        .lean();
+};
+
+module.exports = {
+    saveComment,
+    saveCommentsBatch,
+    countCommentsAfterCommentId,
+    getLatestCommentsForRoom
+};
