@@ -165,6 +165,9 @@ const start = async () => {
         await mongoose.connect(process.env.MONGO_URI);
         console.log("MongoDB connected");
 
+        await initMariaDb();
+        await ensureChatHistorySchema();
+
         await connectRedis();
 
         app.listen(PORT, () => {
