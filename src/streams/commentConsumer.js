@@ -25,6 +25,10 @@ const MAX_BATCH_SIZE = positiveInt(process.env.MAX_BATCH_SIZE, 10000);
 const DISCOVERY_INTERVAL_MS = positiveInt(process.env.DISCOVERY_INTERVAL_MS, 3000);
 const READ_COUNT = positiveInt(process.env.READ_COUNT, 100);
 const READ_BLOCK_MS = positiveInt(process.env.READ_BLOCK_MS, 5000);
+const PENDING_RECOVERY_ENABLED = String(process.env.PENDING_RECOVERY_ENABLED || "true").toLowerCase() === "true";
+const PENDING_MIN_IDLE_MS = positiveInt(process.env.PENDING_MIN_IDLE_MS, 60000);
+const PENDING_RECOVERY_COUNT = positiveInt(process.env.PENDING_RECOVERY_COUNT, READ_COUNT);
+const PENDING_RECOVERY_INTERVAL_MS = positiveInt(process.env.PENDING_RECOVERY_INTERVAL_MS, 30000);
 const SUMMARY_BATCH_SIZE = positiveInt(process.env.SUMMARY_BATCH_SIZE, 500);
 const SUMMARY_MESSAGE_LIMIT = Math.min(
     positiveInt(process.env.SUMMARY_MESSAGE_LIMIT, SUMMARY_BATCH_SIZE),
@@ -40,6 +44,7 @@ const hasWildcard = (value) => value.includes("*") || value.includes("?") || val
 const knownStreams = new Set();
 let activeStreams = [];
 let discoveryInProgress = false;
+const queuedSourceIds = new Set();
 
 const ensureGroupForStream = async (streamKey) => {
     try {
@@ -137,6 +142,59 @@ const getRoomIdsFromComments = (comments) => {
     );
 };
 
+const sourceStreamId = (streamKey, messageId) => `${streamKey}:${messageId}`;
+
+const enqueueStreamMessage = ({ stream, id, data }) => {
+    const sourceId = sourceStreamId(stream, id);
+    if (queuedSourceIds.has(sourceId)) {
+        return null;
+    }
+
+    queuedSourceIds.add(sourceId);
+    return {
+        stream,
+        id,
+        data: {
+            ...data,
+            source_stream_id: sourceId,
+            stream_id: id,
+            stream_key: stream
+        }
+    };
+};
+
+const redisFieldsToObject = (fields) => {
+    if (!Array.isArray(fields)) {
+        return fields || {};
+    }
+
+    const data = {};
+    for (let i = 0; i < fields.length; i += 2) {
+        data[String(fields[i])] = fields[i + 1];
+    }
+    return data;
+};
+
+const parseAutoClaimMessages = (response) => {
+    const messages = Array.isArray(response) ? response[1] : response?.messages;
+    if (!Array.isArray(messages)) {
+        return [];
+    }
+
+    return messages.map((entry) => {
+        if (Array.isArray(entry)) {
+            return {
+                id: entry[0],
+                message: redisFieldsToObject(entry[1])
+            };
+        }
+        return {
+            id: entry.id,
+            message: entry.message || {}
+        };
+    });
+};
+
 const handleSummarization = async (savedComments) => {
     if (!SUMMARY_AUTO_ENABLED) {
         return;
@@ -198,6 +256,8 @@ const startConsumer = async () => {
     console.log(`STREAM_PATTERN: ${STREAM_PATTERN}`);
     console.log(`GROUP_NAME: ${GROUP_NAME}`);
     console.log(`CONSUMER_NAME: ${CONSUMER_NAME}`);
+    console.log(`PENDING_RECOVERY_ENABLED: ${PENDING_RECOVERY_ENABLED}`);
+    console.log(`PENDING_MIN_IDLE_MS: ${PENDING_MIN_IDLE_MS}`);
     console.log(`SUMMARY_BATCH_SIZE: ${SUMMARY_BATCH_SIZE}`);
     console.log(`SUMMARY_MESSAGE_LIMIT: ${SUMMARY_MESSAGE_LIMIT}`);
     console.log(`SUMMARY_AUTO_ENABLED: ${SUMMARY_AUTO_ENABLED}`);
@@ -216,13 +276,7 @@ const startConsumer = async () => {
 
         try {
             const saveStart = performance.now();
-            const savedComments = await saveCommentsBatch(
-                batch.map((item) => ({
-                    ...item.data,
-                    stream_id: item.id,
-                    stream_key: item.stream
-                }))
-            );
+            const savedComments = await saveCommentsBatch(batch.map((item) => item.data));
             const saveMs = performance.now() - saveStart;
 
             const ackStart = performance.now();
@@ -245,6 +299,9 @@ const startConsumer = async () => {
             );
 
             await handleSummarization(savedComments);
+            for (const item of batch) {
+                queuedSourceIds.delete(sourceStreamId(item.stream, item.id));
+            }
         } catch (err) {
             console.error("Batch save failed:", err.message || err);
             pending.unshift(...batch);
@@ -262,6 +319,54 @@ const startConsumer = async () => {
             console.error("Stream discovery failed:", err.message || err);
         });
     }, DISCOVERY_INTERVAL_MS);
+
+    const recoverPendingMessages = async () => {
+        if (!PENDING_RECOVERY_ENABLED || activeStreams.length === 0) {
+            return;
+        }
+
+        for (const streamKey of activeStreams) {
+            try {
+                const response = await redisClient.sendCommand([
+                    "XAUTOCLAIM",
+                    streamKey,
+                    GROUP_NAME,
+                    CONSUMER_NAME,
+                    String(PENDING_MIN_IDLE_MS),
+                    "0-0",
+                    "COUNT",
+                    String(PENDING_RECOVERY_COUNT)
+                ]);
+                const claimedMessages = parseAutoClaimMessages(response);
+                let enqueuedCount = 0;
+
+                for (const message of claimedMessages) {
+                    const item = enqueueStreamMessage({
+                        stream: streamKey,
+                        id: message.id,
+                        data: message.message
+                    });
+                    if (item) {
+                        pending.push(item);
+                        enqueuedCount += 1;
+                    }
+                }
+
+                if (enqueuedCount > 0) {
+                    console.warn(`Recovered pending stream messages: stream=${streamKey}, count=${enqueuedCount}`);
+                    await flushQueue("pending-recovery");
+                }
+            } catch (err) {
+                console.error(`Pending recovery failed: stream=${streamKey}`, err.message || err);
+            }
+        }
+    };
+
+    setInterval(() => {
+        recoverPendingMessages().catch((err) => {
+            console.error("Pending recovery loop failed:", err.message || err);
+        });
+    }, PENDING_RECOVERY_INTERVAL_MS);
 
     while (true) {
         try {
@@ -293,14 +398,15 @@ const startConsumer = async () => {
 
             for (const stream of response) {
                 for (const message of stream.messages) {
-                    pending.push({
+                    const item = enqueueStreamMessage({
                         stream: stream.name,
                         id: message.id,
-                        data: message.message,
-                        meta: {
-                          sourceStreamId: `${stream.name}:${message.id}`,
-                        }
+                        data: message.message
                     });
+                    if (!item) {
+                        continue;
+                    }
+                    pending.push(item);
 
                     if (pending.length >= MAX_BATCH_SIZE) {
                         await flushQueue("max-size");

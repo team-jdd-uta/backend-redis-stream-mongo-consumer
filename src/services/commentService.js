@@ -2,6 +2,11 @@ const mongoose = require("mongoose");
 const Comment = require("../models/Comment");
 
 const toCommentDoc = (data) => ({
+    source_stream_id: String(
+        data.source_stream_id ??
+        data.sourceStreamId ??
+        (data.stream_key && data.stream_id ? `${data.stream_key}:${data.stream_id}` : "")
+    ) || undefined,
     user_id: String(data.user_id ?? data.senderUserId ?? data.sender_user_id ?? data.sender ?? ""),
     sender_display_name: String(data.sender_display_name ?? data.senderDisplayName ?? data.sender ?? data.user_id ?? ""),
     room_owner_user_id: String(data.room_owner_user_id ?? data.roomOwnerUserId ?? ""),
@@ -40,9 +45,27 @@ const saveCommentsBatch = async (items) => {
         return [];
     }
 
-    const result = await Comment.insertMany(docs, { ordered: false });
-    console.log(`Comment batch saved: ${result.length}`);
-    return result;
+    try {
+        const result = await Comment.insertMany(docs, { ordered: false });
+        console.log(`Comment batch saved: ${result.length}`);
+        return result;
+    } catch (err) {
+        const writeErrors = err.writeErrors || err.result?.result?.writeErrors || [];
+        const duplicateOnly = err.code === 11000 || (writeErrors.length > 0 && writeErrors.every((writeError) => {
+            const code = writeError.code || writeError.err?.code;
+            return code === 11000;
+        }));
+
+        if (!duplicateOnly) {
+            throw err;
+        }
+
+        const insertedDocs = err.insertedDocs || [];
+        console.warn(
+            `Comment batch contained duplicates: inserted=${insertedDocs.length}, duplicates=${writeErrors.length}`
+        );
+        return insertedDocs;
+    }
 };
 
 const buildRoomFilterAfterComment = (roomId, lastCommentId) => {
