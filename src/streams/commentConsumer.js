@@ -32,6 +32,7 @@ const SUMMARY_MESSAGE_LIMIT = Math.min(
 );
 
 const summaryServiceClient = createSummaryServiceClient();
+const SUMMARY_AUTO_ENABLED = String(process.env.SUMMARY_AUTO_ENABLED || "false").toLowerCase() === "true";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const hasWildcard = (value) => value.includes("*") || value.includes("?") || value.includes("[");
@@ -137,6 +138,10 @@ const getRoomIdsFromComments = (comments) => {
 };
 
 const handleSummarization = async (savedComments) => {
+    if (!SUMMARY_AUTO_ENABLED) {
+        return;
+    }
+
     const roomIds = getRoomIdsFromComments(savedComments);
 
     for (const roomId of roomIds) {
@@ -195,6 +200,7 @@ const startConsumer = async () => {
     console.log(`CONSUMER_NAME: ${CONSUMER_NAME}`);
     console.log(`SUMMARY_BATCH_SIZE: ${SUMMARY_BATCH_SIZE}`);
     console.log(`SUMMARY_MESSAGE_LIMIT: ${SUMMARY_MESSAGE_LIMIT}`);
+    console.log(`SUMMARY_AUTO_ENABLED: ${SUMMARY_AUTO_ENABLED}`);
 
     const pending = [];
     let flushing = false;

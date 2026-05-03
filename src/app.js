@@ -5,17 +5,20 @@ const fs = require("fs");
 const mongoose = require("mongoose");
 const os = require("os");
 const path = require("path");
-const { createChatHistoryServer } = require("./http/server");
 const { connectRedis } = require("./config/redis");
 const { initMariaDb, ensureChatHistorySchema, closeMariaDb } = require("./config/mariadb");
 const startConsumer = require("./streams/commentConsumer");
+const { queryChatHistory } = require("./services/chatHistoryProjectionService");
 const {
     getLatestSummary,
     getSummaryHistory
 } = require("./services/summaryService");
+const { createManualSummaryService } = require("./services/manualSummaryService");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const manualSummaryService = createManualSummaryService();
+let mariaDbReadyPromise = null;
 const allowedOrigins = String(
     process.env.CORS_ALLOWED_ORIGINS ||
     "http://localhost:5173,http://127.0.0.1:5173,https://front.team9.cloud.skala-ai.com"
@@ -34,7 +37,7 @@ app.use((req, res, next) => {
     }
 
     res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.header("Access-Control-Allow-Headers", "Content-Type,Authorization");
+    res.header("Access-Control-Allow-Headers", "Content-Type,Authorization,X-User-Id");
 
     if (req.method === "OPTIONS") {
         return res.sendStatus(204);
@@ -69,6 +72,74 @@ const sendLatestSummary = async (req, res) => {
     }
 };
 
+const sendChatHistory = async (req, res) => {
+    try {
+        if (!mariaDbReadyPromise) {
+            mariaDbReadyPromise = initMariaDb().then(() => ensureChatHistorySchema());
+        }
+        await mariaDbReadyPromise;
+
+        const ownerUserId = decodeURIComponent(req.params.ownerUserId || "");
+        const targetUserId = decodeURIComponent(req.params.targetUserId || "");
+        const before = req.query.before || undefined;
+        const limit = req.query.limit || undefined;
+
+        if (!ownerUserId || !targetUserId) {
+            return res.status(400).json({ message: "ownerUserId and targetUserId are required" });
+        }
+
+        const payload = await queryChatHistory({
+            ownerUserId,
+            targetUserId,
+            before,
+            limit
+        });
+        return res.json(payload);
+    } catch (error) {
+        console.error("[http] chat history query failed:", error);
+        return res.status(500).json({
+            message: "failed to query chat history",
+            error: error.message
+        });
+    }
+};
+
+const sendManualSummary = async (req, res) => {
+    try {
+        const requesterUserId = String(
+            req.header("X-User-Id") ||
+            req.body?.requesterUserId ||
+            req.body?.userId ||
+            ""
+        ).trim();
+
+        const result = await manualSummaryService.summarizeRoom({
+            roomId: req.params.roomId,
+            requesterUserId
+        });
+
+        return res.status(201).json(result);
+    } catch (error) {
+        const status = Number(error.status || 500);
+        if (status >= 500) {
+            console.error("Manual summary failed:", error);
+        }
+        return res.status(status).json({
+            error: error.code || "SUMMARY_REQUEST_FAILED",
+            message: error.message,
+            ...(error.details || {})
+        });
+    }
+};
+
+app.get("/api/chat-history/owners/:ownerUserId/users/:targetUserId", sendChatHistory);
+app.get("/chat-history/owners/:ownerUserId/users/:targetUserId", sendChatHistory);
+
+app.get("/api/chat-history/summaries/:roomId", sendLatestSummary);
+app.get("/api/chat-history/summaries/:roomId/latest", sendLatestSummary);
+app.get("/api/chat-history/rooms/:roomId/summary", sendLatestSummary);
+app.post("/api/chat-history/rooms/:roomId/summary", sendManualSummary);
+
 app.get("/api/summaries/:roomId", sendLatestSummary);
 app.get("/api/summaries/:roomId/latest", sendLatestSummary);
 app.get("/api/rooms/:roomId/summary", sendLatestSummary);
@@ -89,8 +160,6 @@ app.get("/api/summaries/:roomId/history", async (req, res) => {
 
 const start = async () => {
     const draining = { value: false };
-    const port = Number(process.env.PORT || 3010);
-    const httpServer = createChatHistoryServer({ port, drainingRef: draining });
 
     try {
         await mongoose.connect(process.env.MONGO_URI);
@@ -107,9 +176,6 @@ const start = async () => {
         console.log(`GROUP_NAME: ${process.env.GROUP_NAME || "comment-group"}`);
         console.log(`CONSUMER_NAME: ${process.env.CONSUMER_NAME || "comment-worker-1"}`);
 
-        await httpServer.listen();
-        console.log(`🌐 Chat history API listening on :${port}`);
-
         const readinessFile = process.env.READINESS_FILE_PATH || path.join(os.tmpdir(), "consumer-ready");
         fs.writeFileSync(readinessFile, "ready\n");
         void startConsumer().catch((err) => {
@@ -119,7 +185,6 @@ const start = async () => {
 
         const shutdown = async () => {
             draining.value = true;
-            await httpServer.close().catch(() => undefined);
             await closeMariaDb().catch(() => undefined);
             await mongoose.disconnect().catch(() => undefined);
             process.exit(0);

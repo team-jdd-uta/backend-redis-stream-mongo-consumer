@@ -8,6 +8,9 @@ const saveSummary = async (data) => {
             messageCount: Number(data.messageCount || 0),
             sourceMessageCount: Number(data.sourceMessageCount || 0),
             triggerThreshold: Number(data.triggerThreshold || 0),
+            triggerType: String(data.triggerType || "AUTO"),
+            requestedBy: data.requestedBy ? String(data.requestedBy) : undefined,
+            windowMinutes: data.windowMinutes ? Number(data.windowMinutes) : undefined,
             messageIds: data.messageIds || [],
             lastCommentId: data.lastCommentId ? String(data.lastCommentId) : undefined,
             latestCommentCreatedAt: data.latestCommentCreatedAt

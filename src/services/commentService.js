@@ -2,7 +2,10 @@ const mongoose = require("mongoose");
 const Comment = require("../models/Comment");
 
 const toCommentDoc = (data) => ({
-    user_id: String(data.user_id ?? data.sender ?? ""),
+    user_id: String(data.user_id ?? data.senderUserId ?? data.sender_user_id ?? data.sender ?? ""),
+    sender_display_name: String(data.sender_display_name ?? data.senderDisplayName ?? data.sender ?? data.user_id ?? ""),
+    room_owner_user_id: String(data.room_owner_user_id ?? data.roomOwnerUserId ?? ""),
+    room_name: String(data.room_name ?? data.roomName ?? ""),
     comment: String(data.comment ?? data.message ?? ""),
     room_id: String(data.room_id ?? data.roomId ?? "0"),
     type: String(data.type ?? ""),
@@ -71,9 +74,24 @@ const getLatestCommentsForRoom = async (roomId, limit) => {
         .lean();
 };
 
+const getRecentCommentsForRoom = async (roomId, { since, limit }) => {
+    const safeLimit = Math.min(Math.max(Number(limit) || 1, 1), 100);
+    const sinceDate = since instanceof Date ? since : new Date(since);
+
+    return Comment.find({
+        room_id: String(roomId),
+        comment: { $ne: "" },
+        createdAt: { $gte: sinceDate }
+    })
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(safeLimit)
+        .lean();
+};
+
 module.exports = {
     saveComment,
     saveCommentsBatch,
     countCommentsAfterCommentId,
-    getLatestCommentsForRoom
+    getLatestCommentsForRoom,
+    getRecentCommentsForRoom
 };
