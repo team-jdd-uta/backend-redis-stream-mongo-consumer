@@ -23,6 +23,21 @@ function getPoolConfig() {
     };
   }
 
+  if (process.env.DB_URL?.startsWith('jdbc:mariadb://')) {
+    const url = new URL(process.env.DB_URL.replace(/^jdbc:/, ''));
+    return {
+      host: url.hostname,
+      port: toNumber(url.port, 3306),
+      user: process.env.DB_USER || process.env.MARIADB_USER || 'root',
+      password: process.env.DB_PASSWORD || process.env.MARIADB_PASSWORD || '',
+      database: url.pathname.replace(/^\//, '') || process.env.DB_NAME || 'chat_history',
+      waitForConnections: true,
+      connectionLimit: toNumber(process.env.MARIADB_CONNECTION_LIMIT, 10),
+      queueLimit: 0,
+      charset: 'utf8mb4',
+    };
+  }
+
   return {
     host: process.env.MARIADB_HOST || process.env.DB_HOST || '127.0.0.1',
     port: toNumber(process.env.MARIADB_PORT || process.env.DB_PORT, 3306),
