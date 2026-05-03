@@ -9,6 +9,7 @@ const {
     saveSummary,
     getLatestSummary
 } = require("../services/summaryService");
+const { saveChatHistoryBatch } = require("../services/chatHistoryProjectionService");
 const { createSummaryServiceClient } = require("../client/summaryServiceClient");
 
 const positiveInt = (value, fallback) => {
@@ -277,6 +278,12 @@ const startConsumer = async () => {
         try {
             const saveStart = performance.now();
             const savedComments = await saveCommentsBatch(batch.map((item) => item.data));
+            const projectedRows = await saveChatHistoryBatch(batch.map((item) => ({
+                data: item.data,
+                meta: {
+                    sourceStreamId: sourceStreamId(item.stream, item.id)
+                }
+            })));
             const saveMs = performance.now() - saveStart;
 
             const ackStart = performance.now();
@@ -295,7 +302,7 @@ const startConsumer = async () => {
 
             const ackMs = performance.now() - ackStart;
             console.log(
-                `Batch saved and acked: ${batch.length} (save ${saveMs.toFixed(2)} ms, ACK ${ackMs.toFixed(2)} ms, ${reason})`
+                `Batch saved and acked: ${batch.length} (mongo ${savedComments.length}, projection ${projectedRows}, save ${saveMs.toFixed(2)} ms, ACK ${ackMs.toFixed(2)} ms, ${reason})`
             );
 
             await handleSummarization(savedComments);
