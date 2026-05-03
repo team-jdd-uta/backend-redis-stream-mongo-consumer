@@ -6,12 +6,14 @@ const os = require("os");
 const path = require("path");
 const { connectRedis } = require("./config/redis");
 const startConsumer = require("./streams/commentConsumer");
+const { startHttpServer } = require("./httpServer");
 
 const start = async () => {
     try {
         // MongoDB 연결
         await mongoose.connect(process.env.MONGO_URI);
         console.log("✅ MongoDB 연결 성공");
+        startHttpServer();
 
         // Redis 연결
         await connectRedis();

@@ -1,11 +1,31 @@
-const { createClient } = require("redis");
+const { createClient, createCluster } = require("redis");
 
-const redisClient = createClient({
-    url: process.env.REDIS_URL,
-    socket: {
-        reconnectStrategy: (retries) => Math.min(retries * 50, 500)
-    }
-});
+const parseClusterNodes = () => (process.env.REDIS_NODES || "")
+    .split(",")
+    .map((node) => node.trim())
+    .filter(Boolean)
+    .map((node) => ({
+        url: node.startsWith("redis://") || node.startsWith("rediss://")
+            ? node
+            : `redis://${node}`
+    }));
+
+const clusterNodes = parseClusterNodes();
+const redisClient = clusterNodes.length > 0
+    ? createCluster({
+        rootNodes: clusterNodes,
+        defaults: {
+            socket: {
+                reconnectStrategy: (retries) => Math.min(retries * 50, 500)
+            }
+        }
+    })
+    : createClient({
+        url: process.env.REDIS_URL,
+        socket: {
+            reconnectStrategy: (retries) => Math.min(retries * 50, 500)
+        }
+    });
 
 redisClient.on("error", (err) => {
     console.error("❌ Redis 에러:", err.message || err);
