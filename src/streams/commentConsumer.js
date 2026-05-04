@@ -196,6 +196,39 @@ const parseAutoClaimMessages = (response) => {
     });
 };
 
+const readNewMessages = async () => {
+    if (activeStreams.length === 1) {
+        return redisClient.xReadGroup(
+            GROUP_NAME,
+            CONSUMER_NAME,
+            [{ key: activeStreams[0], id: ">" }],
+            { COUNT: READ_COUNT, BLOCK: READ_BLOCK_MS }
+        );
+    }
+
+    const results = [];
+
+    for (const streamKey of activeStreams) {
+        const response = await redisClient.xReadGroup(
+            GROUP_NAME,
+            CONSUMER_NAME,
+            [{ key: streamKey, id: ">" }],
+            { COUNT: READ_COUNT, BLOCK: 1 }
+        );
+
+        if (response) {
+            results.push(...response);
+        }
+    }
+
+    if (results.length === 0) {
+        await sleep(Math.min(READ_BLOCK_MS, 1000));
+        return null;
+    }
+
+    return results;
+};
+
 const handleSummarization = async (savedComments) => {
     if (!SUMMARY_AUTO_ENABLED) {
         return;
@@ -386,12 +419,7 @@ const startConsumer = async () => {
                 continue;
             }
 
-            const response = await redisClient.xReadGroup(
-                GROUP_NAME,
-                CONSUMER_NAME,
-                activeStreams.map((key) => ({ key, id: ">" })),
-                { COUNT: READ_COUNT, BLOCK: READ_BLOCK_MS }
-            );
+            const response = await readNewMessages();
 
             if (!response) {
                 if (!idleLogged && pending.length === 0 && !flushing) {

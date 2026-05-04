@@ -31,6 +31,17 @@ const getStreamRoomId = (streamKey) => {
     return match ? match[1] : "";
 };
 
+const buildRoomIdentityFilter = (roomId) => {
+    const normalizedRoomId = String(roomId);
+
+    return {
+        $or: [
+            { room_id: normalizedRoomId },
+            { stream_key: `chat:stream:room:${normalizedRoomId}` }
+        ]
+    };
+};
+
 const toCommentDoc = (sourceData) => {
     const data = normalizeSourceData(sourceData);
     const roomId = data.room_id ?? data.roomId ?? getStreamRoomId(data.stream_key ?? data.streamKey) ?? "0";
@@ -105,7 +116,7 @@ const saveCommentsBatch = async (items) => {
 
 const buildRoomFilterAfterComment = (roomId, lastCommentId) => {
     const filter = {
-        room_id: String(roomId),
+        ...buildRoomIdentityFilter(roomId),
         comment: { $ne: "" }
     };
 
@@ -124,7 +135,7 @@ const getLatestCommentsForRoom = async (roomId, limit) => {
     const safeLimit = Math.max(Number(limit) || 1, 1);
 
     return Comment.find({
-        room_id: String(roomId),
+        ...buildRoomIdentityFilter(roomId),
         comment: { $ne: "" }
     })
         .sort({ _id: -1 })
@@ -137,7 +148,7 @@ const getRecentCommentsForRoom = async (roomId, { since, limit }) => {
     const sinceDate = since instanceof Date ? since : new Date(since);
 
     return Comment.find({
-        room_id: String(roomId),
+        ...buildRoomIdentityFilter(roomId),
         comment: { $ne: "" },
         createdAt: { $gte: sinceDate }
     })
