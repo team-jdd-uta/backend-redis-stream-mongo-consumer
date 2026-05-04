@@ -47,6 +47,24 @@ let activeStreams = [];
 let discoveryInProgress = false;
 const queuedSourceIds = new Set();
 
+const messageCountFromReadResponse = (response) => {
+    if (!Array.isArray(response)) {
+        return 0;
+    }
+
+    return response.reduce((sum, stream) => sum + (stream.messages?.length || 0), 0);
+};
+
+const describeStreamRead = (response) => {
+    if (!Array.isArray(response)) {
+        return "";
+    }
+
+    return response
+        .map((stream) => `${stream.name}:${stream.messages?.length || 0}`)
+        .join(", ");
+};
+
 const ensureGroupForStream = async (streamKey) => {
     try {
         await redisClient.xGroupCreate(
@@ -113,6 +131,10 @@ const refreshStreams = async () => {
         const discovered = await discoverStreamKeys();
         const validStreams = [];
 
+        console.log(
+            `[consumer:discover] pattern=${STREAM_PATTERN}, discovered=${discovered.length}, known=${knownStreams.size}`
+        );
+
         for (const streamKey of discovered) {
             if (!knownStreams.has(streamKey)) {
                 const ok = await ensureGroupForStream(streamKey);
@@ -128,6 +150,7 @@ const refreshStreams = async () => {
         }
 
         activeStreams = validStreams;
+        console.log(`[consumer:discover] active=${activeStreams.length}`);
     } finally {
         discoveryInProgress = false;
     }
@@ -148,10 +171,14 @@ const sourceStreamId = (streamKey, messageId) => `${streamKey}:${messageId}`;
 const enqueueStreamMessage = ({ stream, id, data }) => {
     const sourceId = sourceStreamId(stream, id);
     if (queuedSourceIds.has(sourceId)) {
+        console.log(`[consumer:enqueue] duplicate skipped source=${sourceId}`);
         return null;
     }
 
     queuedSourceIds.add(sourceId);
+    console.log(
+        `[consumer:enqueue] source=${sourceId}, roomId=${data.roomId || data.room_id || ""}, fields=${Object.keys(data || {}).join(",")}`
+    );
     return {
         stream,
         id,
@@ -198,12 +225,17 @@ const parseAutoClaimMessages = (response) => {
 
 const readNewMessages = async () => {
     if (activeStreams.length === 1) {
-        return redisClient.xReadGroup(
+        const response = await redisClient.xReadGroup(
             GROUP_NAME,
             CONSUMER_NAME,
             [{ key: activeStreams[0], id: ">" }],
             { COUNT: READ_COUNT, BLOCK: READ_BLOCK_MS }
         );
+        const count = messageCountFromReadResponse(response);
+        if (count > 0) {
+            console.log(`[consumer:read] streams=${activeStreams.length}, messages=${count}, detail=${describeStreamRead(response)}`);
+        }
+        return response;
     }
 
     const results = [];
@@ -217,6 +249,10 @@ const readNewMessages = async () => {
         );
 
         if (response) {
+            const count = messageCountFromReadResponse(response);
+            if (count > 0) {
+                console.log(`[consumer:read] stream=${streamKey}, messages=${count}`);
+            }
             results.push(...response);
         }
     }
@@ -309,6 +345,12 @@ const startConsumer = async () => {
         const batch = pending.splice(0, pending.length);
 
         try {
+            const rooms = Array.from(new Set(batch.map((item) => String(
+                item.data?.roomId || item.data?.room_id || item.stream?.replace(/^chat:stream:room:/, "") || ""
+            ))));
+            console.log(
+                `[consumer:flush:start] reason=${reason}, batch=${batch.length}, rooms=${rooms.join(",")}`
+            );
             const saveStart = performance.now();
             const savedComments = await saveCommentsBatch(batch.map((item) => item.data));
             const projectedRows = await saveChatHistoryBatch(batch.map((item) => ({
@@ -330,6 +372,7 @@ const startConsumer = async () => {
             }
 
             for (const [streamKey, ids] of ackByStream.entries()) {
+                console.log(`[consumer:ack] stream=${streamKey}, count=${ids.length}`);
                 await redisClient.xAck(streamKey, GROUP_NAME, ...ids);
             }
 

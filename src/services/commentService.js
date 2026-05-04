@@ -42,6 +42,15 @@ const buildRoomIdentityFilter = (roomId) => {
     };
 };
 
+const describeCommentDoc = (doc) => ({
+    room_id: doc.room_id,
+    stream_key: doc.stream_key,
+    source_stream_id: doc.source_stream_id,
+    user_id: doc.user_id,
+    commentLength: doc.comment.length,
+    createdAt: doc.createdAt
+});
+
 const toCommentDoc = (sourceData) => {
     const data = normalizeSourceData(sourceData);
     const roomId = data.room_id ?? data.roomId ?? getStreamRoomId(data.stream_key ?? data.streamKey) ?? "0";
@@ -88,12 +97,20 @@ const saveCommentsBatch = async (items) => {
     const docs = items.map(toCommentDoc);
 
     if (docs.length === 0) {
+        console.log("[comments:save] skipped empty batch");
         return [];
     }
 
     try {
+        console.log(
+            `[comments:save:start] docs=${docs.length}, rooms=${Array.from(new Set(docs.map((doc) => doc.room_id))).join(",")}`
+        );
+        console.log("[comments:save:sample]", describeCommentDoc(docs[0]));
         const result = await Comment.insertMany(docs, { ordered: false });
         console.log(`Comment batch saved: ${result.length}`);
+        console.log(
+            `[comments:save:done] inserted=${result.length}, rooms=${Array.from(new Set(result.map((doc) => doc.room_id))).join(",")}`
+        );
         return result;
     } catch (err) {
         const writeErrors = err.writeErrors || err.result?.result?.writeErrors || [];
@@ -110,6 +127,9 @@ const saveCommentsBatch = async (items) => {
         console.warn(
             `Comment batch contained duplicates: inserted=${insertedDocs.length}, duplicates=${writeErrors.length}`
         );
+        if (insertedDocs.length > 0) {
+            console.log("[comments:save:duplicate-sample]", describeCommentDoc(insertedDocs[0]));
+        }
         return insertedDocs;
     }
 };
@@ -128,26 +148,33 @@ const buildRoomFilterAfterComment = (roomId, lastCommentId) => {
 };
 
 const countCommentsAfterCommentId = async (roomId, lastCommentId) => {
-    return Comment.countDocuments(buildRoomFilterAfterComment(roomId, lastCommentId));
+    const filter = buildRoomFilterAfterComment(roomId, lastCommentId);
+    const count = await Comment.countDocuments(filter);
+    console.log(`[comments:count-after] room_id=${roomId}, lastCommentId=${lastCommentId || ""}, count=${count}`);
+    return count;
 };
 
 const getLatestCommentsForRoom = async (roomId, limit) => {
     const safeLimit = Math.max(Number(limit) || 1, 1);
 
-    return Comment.find({
+    console.log(`[comments:latest:query] room_id=${roomId}, limit=${safeLimit}`);
+    const comments = await Comment.find({
         ...buildRoomIdentityFilter(roomId),
         comment: { $ne: "" }
     })
         .sort({ _id: -1 })
         .limit(safeLimit)
         .lean();
+    console.log(`[comments:latest:result] room_id=${roomId}, count=${comments.length}`);
+    return comments;
 };
 
 const getRecentCommentsForRoom = async (roomId, { since, limit }) => {
     const safeLimit = Math.min(Math.max(Number(limit) || 1, 1), 100);
     const sinceDate = since instanceof Date ? since : new Date(since);
 
-    return Comment.find({
+    console.log(`[comments:recent:query] room_id=${roomId}, since=${sinceDate.toISOString()}, limit=${safeLimit}`);
+    const comments = await Comment.find({
         ...buildRoomIdentityFilter(roomId),
         comment: { $ne: "" },
         createdAt: { $gte: sinceDate }
@@ -155,6 +182,11 @@ const getRecentCommentsForRoom = async (roomId, { since, limit }) => {
         .sort({ createdAt: -1, _id: -1 })
         .limit(safeLimit)
         .lean();
+    console.log(`[comments:recent:result] room_id=${roomId}, count=${comments.length}`);
+    if (comments.length > 0) {
+        console.log("[comments:recent:sample]", describeCommentDoc(comments[0]));
+    }
+    return comments;
 };
 
 module.exports = {

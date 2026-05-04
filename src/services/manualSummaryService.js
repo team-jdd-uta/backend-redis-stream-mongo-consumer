@@ -37,12 +37,16 @@ function createManualSummaryService({
 
     async function assertBroadcaster(roomId, requesterUserId) {
         const requester = normalizeUserId(requesterUserId);
+        console.log(`[manual-summary:auth:start] room_id=${roomId}, requester=${requester || ""}`);
         if (!requester) {
             throw createHttpError(401, "REQUESTER_REQUIRED", "requester user id is required");
         }
 
         const room = await roomServiceClient.getRoom(roomId);
         const broadcasterId = normalizeUserId(room.broadcasterId ?? room.broadcaster_id ?? room.ownerUserId);
+        console.log(
+            `[manual-summary:auth:room] room_id=${roomId}, broadcaster=${broadcasterId || ""}, requester=${requester}`
+        );
         if (!broadcasterId) {
             throw createHttpError(409, "ROOM_BROADCASTER_MISSING", "room broadcaster is not set");
         }
@@ -55,18 +59,28 @@ function createManualSummaryService({
 
     async function summarizeRoom({ roomId, requesterUserId }) {
         const normalizedRoomId = String(roomId || "").trim();
+        console.log(`[manual-summary:start] room_id=${normalizedRoomId}, requester=${requesterUserId || ""}`);
         if (!normalizedRoomId) {
             throw createHttpError(400, "ROOM_ID_REQUIRED", "roomId is required");
         }
 
         const room = await assertBroadcaster(normalizedRoomId, requesterUserId);
         const since = new Date(Date.now() - windowMinutes * 60 * 1000);
+        console.log(
+            `[manual-summary:comments:query] room_id=${normalizedRoomId}, since=${since.toISOString()}, min=${minMessages}, max=${maxMessages}`
+        );
         const latestComments = await getRecentCommentsForRoom(normalizedRoomId, {
             since,
             limit: maxMessages
         });
+        console.log(
+            `[manual-summary:comments:result] room_id=${normalizedRoomId}, count=${latestComments.length}`
+        );
 
         if (latestComments.length < minMessages) {
+            console.warn(
+                `[manual-summary:insufficient] room_id=${normalizedRoomId}, count=${latestComments.length}, min=${minMessages}`
+            );
             throw createHttpError(
                 409,
                 "INSUFFICIENT_CHAT_MESSAGES",
@@ -81,10 +95,16 @@ function createManualSummaryService({
         }
 
         const messagesForSummary = [...latestComments].reverse();
+        console.log(
+            `[manual-summary:ai:start] room_id=${normalizedRoomId}, payload=${messagesForSummary.length}`
+        );
         const summaryResult = await summaryServiceClient.callSummarize(messagesForSummary);
         if (!summaryResult.summary) {
             throw createHttpError(502, "EMPTY_SUMMARY", "summary service returned an empty summary");
         }
+        console.log(
+            `[manual-summary:ai:done] room_id=${normalizedRoomId}, messageCount=${summaryResult.messageCount}`
+        );
 
         const newestComment = latestComments[0];
         const summaryDoc = await saveSummary({
@@ -100,6 +120,9 @@ function createManualSummaryService({
             requestedBy: requesterUserId,
             windowMinutes
         });
+        console.log(
+            `[manual-summary:save:done] room_id=${normalizedRoomId}, summary_id=${summaryDoc._id}, source=${latestComments.length}`
+        );
 
         return {
             roomId: normalizedRoomId,
