@@ -1,29 +1,64 @@
 const mongoose = require("mongoose");
 const Comment = require("../models/Comment");
 
-const toCommentDoc = (data) => ({
-    source_stream_id: String(
-        data.source_stream_id ??
-        data.sourceStreamId ??
-        (data.stream_key && data.stream_id ? `${data.stream_key}:${data.stream_id}` : "")
-    ) || undefined,
-    user_id: String(data.user_id ?? data.senderUserId ?? data.sender_user_id ?? data.sender ?? ""),
-    sender_display_name: String(data.sender_display_name ?? data.senderDisplayName ?? data.sender ?? data.user_id ?? ""),
-    room_owner_user_id: String(data.room_owner_user_id ?? data.roomOwnerUserId ?? ""),
-    room_name: String(data.room_name ?? data.roomName ?? ""),
-    comment: String(data.comment ?? data.message ?? ""),
-    room_id: String(data.room_id ?? data.roomId ?? "0"),
-    type: String(data.type ?? ""),
-    isSuperChat: data.isSuperChat === true || data.isSuperChat === "true",
-    msg_id: String(data.msg_id ?? data.msgId ?? ""),
-    stream_id: String(data.stream_id ?? data.streamId ?? ""),
-    stream_key: String(data.stream_key ?? data.streamKey ?? ""),
-    createdAt: data.createdAt
-        ? new Date(data.createdAt)
-        : data.publishedAt
-            ? new Date(Number(data.publishedAt))
-            : new Date()
-});
+const parseJsonObject = (value) => {
+    if (typeof value !== "string") {
+        return null;
+    }
+
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+        return null;
+    }
+};
+
+const normalizeSourceData = (data = {}) => {
+    const payload = parseJsonObject(data.payload);
+    const nestedMessage = parseJsonObject(data.message);
+
+    return {
+        ...data,
+        ...(payload || {}),
+        ...(nestedMessage || {})
+    };
+};
+
+const getStreamRoomId = (streamKey) => {
+    const value = String(streamKey || "");
+    const match = value.match(/^chat:stream:room:(.+)$/);
+    return match ? match[1] : "";
+};
+
+const toCommentDoc = (sourceData) => {
+    const data = normalizeSourceData(sourceData);
+    const roomId = data.room_id ?? data.roomId ?? getStreamRoomId(data.stream_key ?? data.streamKey) ?? "0";
+
+    return {
+        source_stream_id: String(
+            data.source_stream_id ??
+            data.sourceStreamId ??
+            (data.stream_key && data.stream_id ? `${data.stream_key}:${data.stream_id}` : "")
+        ) || undefined,
+        user_id: String(data.user_id ?? data.senderUserId ?? data.sender_user_id ?? data.sender ?? ""),
+        sender_display_name: String(data.sender_display_name ?? data.senderDisplayName ?? data.sender ?? data.user_id ?? ""),
+        room_owner_user_id: String(data.room_owner_user_id ?? data.roomOwnerUserId ?? ""),
+        room_name: String(data.room_name ?? data.roomName ?? ""),
+        comment: String(data.comment ?? data.message ?? ""),
+        room_id: String(roomId || "0"),
+        type: String(data.type ?? ""),
+        isSuperChat: data.isSuperChat === true || data.isSuperChat === "true",
+        msg_id: String(data.msg_id ?? data.msgId ?? ""),
+        stream_id: String(data.stream_id ?? data.streamId ?? ""),
+        stream_key: String(data.stream_key ?? data.streamKey ?? ""),
+        createdAt: data.createdAt
+            ? new Date(data.createdAt)
+            : data.publishedAt
+                ? new Date(Number(data.publishedAt))
+                : new Date()
+    };
+};
 
 const saveComment = async (data) => {
     try {
